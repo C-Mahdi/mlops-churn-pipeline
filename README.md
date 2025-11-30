@@ -27,6 +27,9 @@ moves into production-ready automation with:
     │   ├── scaler.joblib
     │   └── model_metadata.json
     │
+    ├── notebook
+    │   └── Churrn.ipynb
+    │     
     ├── app.py
     ├── streamlit_app.py
     ├── main.py
