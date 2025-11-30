@@ -1,4 +1,4 @@
-# 📦 Churn Prediction MLOps Project
+#  Churn Prediction MLOps Project
 
 This project implements a complete end-to-end MLOps pipeline for a churn
 prediction model.\
@@ -37,7 +37,7 @@ moves into production-ready automation with:
     ├── requirements.txt
     └── .gitignore
 
-## 🚀 Features
+##  Features
 
 -   Modular ML pipeline\
 -   Automated Makefile workflow\
@@ -45,7 +45,7 @@ moves into production-ready automation with:
 -   Streamlit UI\
 -   Saved ML artifacts
 
-## 📦 Installation
+##  Installation
 
 ``` bash
 git clone https://github.com/C-Mahdi/mlops-churn-pipeline.git
@@ -85,7 +85,7 @@ uvicorn app:app --reload
 streamlit run streamlit_app.py
 ```
 
-## 🧠 What I Learned
+##  What I Learned
 
 -   Code modularization\
 -   Model versioning\
