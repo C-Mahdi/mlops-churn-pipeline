@@ -1,0 +1,4 @@
+/churn_env
+/mlops_env
+/__pycache__/
+*.pyc

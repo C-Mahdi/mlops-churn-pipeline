@@ -1,0 +1,3 @@
+✅ Bibliothèques OK
+✅ Modules OK
+✅ Version manager OK
