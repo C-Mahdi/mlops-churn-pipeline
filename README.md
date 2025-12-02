@@ -88,6 +88,23 @@ uvicorn app:app --reload
 streamlit run streamlit_app.py
 ```
 
+## Open a new terminal
+``` bash
+cd ~/churn-prediction-project
+```
+## Activate your virtual environment
+
+``` bash
+source mlops_env/bin/activate  
+```
+## Run the Streamlit app
+``` bash
+streamlit run streamlit_app.py
+```
+
+
+
+
 ##  What I Learned
 
 -   Code modularization\
