@@ -1,0 +1,17 @@
+name : build and publish Docker image 
+on:
+  [workflow_dispatch]
+
+jobs:
+  publish-image :
+    runs-on : ubuntu-latest
+    steps:
+      - name : Checkout 
+        uses : actions/checkout@v4
+      - name : build image 
+        run : docker build -t devil0mahdi/mahdi-api:latest .
+      - name : push image to docker hub
+        run : docker push devil0mahdi/mahdi-api:latest 
+
+
+        
