@@ -11,7 +11,7 @@ jobs:
       - name : build image 
         run : docker build -t devil0mahdi/mahdi-api:latest .
       - name : push image to docker hub
-        run : 
+        run : |
           docker login -u devil0mahdi -p ${{ secrets.DOCKER_HUB_TOKEN }}
           docker push devil0mahdi/mahdi-api:latest 
 
