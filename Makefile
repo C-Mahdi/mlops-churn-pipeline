@@ -178,3 +178,8 @@ test-api:
 	except Exception as e: \
 	    print(f'❌ Model info échoué: {e}'); \
 	"
+
+run:
+	@echo "=== run container ==="
+	@docker run -p 8000:8000 -p 8501:8501 mahdi-mlops
+    
