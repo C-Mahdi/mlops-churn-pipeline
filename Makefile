@@ -182,4 +182,7 @@ test-api:
 run:
 	@echo "=== run container ==="
 	@docker run -p 8000:8000 -p 8501:8501 mahdi-mlops
-    
+
+mlflow-ui:#mlflow ui --host 0.0.0.0 --port 5000 &
+	@echo "=== run mlflow ui ==="
+	@mlflow ui --host 0.0.0.0 --port 5000
