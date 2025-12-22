@@ -1,0 +1,10 @@
+artifact_location: file:///home/mahdi/churn-prediction-project/mlruns/611514482792122771/models/m-2dda099b4fa84c7ca2a1d5ad5c14c1f3/artifacts
+creation_timestamp: 1766393915331
+experiment_id: '611514482792122771'
+last_updated_timestamp: 1766393918800
+model_id: m-2dda099b4fa84c7ca2a1d5ad5c14c1f3
+model_type: null
+name: model
+source_run_id: c5b2aca0c7604bf485fccd2123169c22
+status: 2
+status_message: null

@@ -1,0 +1,15 @@
+creation_timestamp: 1766393918822
+current_stage: None
+deployment_job_state: null
+description: null
+last_updated_timestamp: 1766393918822
+model_id: m-2dda099b4fa84c7ca2a1d5ad5c14c1f3
+name: Churn_xgboost_model
+run_id: c5b2aca0c7604bf485fccd2123169c22
+run_link: null
+source: models:/m-2dda099b4fa84c7ca2a1d5ad5c14c1f3
+status: READY
+status_message: null
+storage_location: file:///home/mahdi/churn-prediction-project/mlruns/611514482792122771/models/m-2dda099b4fa84c7ca2a1d5ad5c14c1f3/artifacts
+user_id: null
+version: 1

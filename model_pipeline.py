@@ -1,371 +1,393 @@
 """
-Atelier 2 : Modularisation du Code
-Pipeline modulaire pour la prédiction de churn
+Module de pipeline ML pour la prédiction de churn
+Avec support MLflow et Elasticsearch (ELK)
 """
-
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
     confusion_matrix,
     classification_report,
     roc_auc_score,
-    log_loss,
-    cohen_kappa_score,
-    matthews_corrcoef,
+    roc_curve,
 )
-from imblearn.combine import SMOTEENN
+import xgboost as xgb
 import joblib
-import os
+import mlflow
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+import time
+from elasticsearch_logger import get_elasticsearch_logger
 
-# Configuration
-CONFIG = {
-    "TRAIN_DATA_PATH": "data/raw/churn-bigml-80.csv",
-    "TEST_DATA_PATH": "data/raw/churn-bigml-20.csv",
-    "MODEL_PATH": "models/churn_model.joblib",
-    "SCALER_PATH": "models/scaler.joblib",
-    "ENCODER_STATE_PATH": "models/encoder_state.joblib",
-    "ENCODER_AREA_PATH": "models/encoder_area.joblib",
-    "RANDOM_STATE": 42,
-    "SMOTE_SAMPLING_RATIO": 30 / 70,
-    "Z_SCORE_THRESHOLD": 3,
-    "IQR_MULTIPLIER": 1.5,
-}
-
-
-def prepare_data(train_path=None, test_path=None):
+def prepare_data(train_path, test_path):
     """
-    Charger et prétraiter les données pour l'entraînement.
+    Prépare les données d'entraînement et de test
+    
+    Args:
+        train_path: Chemin vers les données d'entraînement
+        test_path: Chemin vers les données de test
+    
+    Returns:
+        X_train, X_test, y_train, y_test, scaler, feature_names
     """
-    if train_path is None:
-        train_path = CONFIG["TRAIN_DATA_PATH"]
-    if test_path is None:
-        test_path = CONFIG["TEST_DATA_PATH"]
+    # Obtenir le logger Elasticsearch
+    es_logger = get_elasticsearch_logger()
+    
+    start_time = time.time()
+    
+    print(f"📂 Chargement des données...")
+    es_logger.log_event("INFO", "Début de la préparation des données", {"stage": "data_loading"})
+    
+    print(f"   Training: {train_path}")
+    print(f"   Test: {test_path}")
+    
+    try:
+        train_data = pd.read_csv(train_path)
+        test_data = pd.read_csv(test_path)
+        
+        print(f"✓ Données chargées: {len(train_data)} train, {len(test_data)} test")
+        
+        # Log vers Elasticsearch
+        es_logger.log_event(
+            "INFO",
+            f"Données chargées: {len(train_data)} train, {len(test_data)} test",
+            {
+                "stage": "data_loading",
+                "train_samples": len(train_data),
+                "test_samples": len(test_data)
+            }
+        )
+        
+        # Séparer features et target
+        X_train = train_data.drop("Churn", axis=1)
+        y_train = train_data["Churn"]
+        X_test = test_data.drop("Churn", axis=1)
+        y_test = test_data["Churn"]
+        
+        # Encoder les variables catégorielles
+        print("🔄 Encodage des variables catégorielles...")
+        es_logger.log_event("INFO", "Encodage des variables catégorielles", {"stage": "encoding"})
+        
+        categorical_cols = X_train.select_dtypes(include=["object", "bool"]).columns
+        
+        for col in categorical_cols:
+            le = LabelEncoder()
+            X_train[col] = le.fit_transform(X_train[col].astype(str))
+            X_test[col] = le.transform(X_test[col].astype(str))
+        
+        # Encoder la target
+        le_target = LabelEncoder()
+        y_train = pd.Series(le_target.fit_transform(y_train), name="Churn")
+        y_test = pd.Series(le_target.transform(y_test), name="Churn")
+        
+        # Normalisation
+        print("📏 Normalisation des features...")
+        es_logger.log_event("INFO", "Normalisation des features", {"stage": "normalization"})
+        
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Convertir en DataFrame
+        feature_names = X_train.columns.tolist()
+        X_train = pd.DataFrame(X_train_scaled, columns=feature_names)
+        X_test = pd.DataFrame(X_test_scaled, columns=feature_names)
+        
+        duration = time.time() - start_time
+        
+        print(f"✅ Préparation terminée!")
+        print(f"   Features: {X_train.shape[1]}")
+        print(f"   Train samples: {X_train.shape[0]}")
+        print(f"   Test samples: {X_test.shape[0]}")
+        print(f"   Durée: {duration:.2f}s")
+        
+        # Log final vers Elasticsearch
+        es_logger.log_data_preparation(
+            train_samples=X_train.shape[0],
+            test_samples=X_test.shape[0],
+            n_features=X_train.shape[1]
+        )
+        
+        return X_train, X_test, y_train, y_test, scaler, feature_names
+        
+    except Exception as e:
+        es_logger.log_error(f"Erreur lors de la préparation des données: {str(e)}", e)
+        raise
 
-    print("Étape 1: Chargement des données...")
-    X_train, X_test = _load_and_combine_data(train_path, test_path)
-
-    print("Étape 2: Encodage des features catégorielles...")
-    X_train, X_test, encoder_state, encoder_area = _encode_categorical_features(
-        X_train, X_test
+def train_model(X_train, y_train, model_type="random_forest"):
+    """
+    Entraîne un modèle de classification
+    
+    Args:
+        X_train: Features d'entraînement
+        y_train: Target d'entraînement
+        model_type: Type de modèle ('random_forest' ou 'xgboost')
+    
+    Returns:
+        model: Modèle entraîné
+    """
+    es_logger = get_elasticsearch_logger()
+    
+    print(f"🤖 Entraînement du modèle {model_type}...")
+    es_logger.log_event(
+        "INFO",
+        f"Début de l'entraînement du modèle {model_type}",
+        {"stage": "training_start", "model_type": model_type}
     )
-
-    print("Étape 3: Gestion des outliers...")
-    X_train = _handle_outliers(X_train)
-
-    print("Étape 4: Feature engineering...")
-    X_train = _create_engineered_features(X_train)
-    X_test = _create_engineered_features(X_test)
-
-    print("Étape 5: Suppression des features corrélées...")
-    X_train = _drop_correlated_features(X_train)
-    X_test = _drop_correlated_features(X_test)
-
-    print("Étape 6: Séparation features/target...")
-    y_train = X_train["Churn"]
-    X_train = X_train.drop(["Churn"], axis=1)
-    y_test = X_test["Churn"]
-    X_test = X_test.drop(["Churn"], axis=1)
-
-    print("Étape 7: Équilibrage des données...")
-    X_train, y_train = _balance_data(X_train, y_train)
-
-    print("Étape 8: Normalisation des features...")
-    X_train_scaled, X_test_scaled, scaler = _scale_features(X_train, X_test)
-
-    _save_preprocessors(scaler, encoder_state, encoder_area)
-
-    joblib.dump(X_train.columns.tolist(), "models/columns_order.joblib")
-
-    print(f"Préparation terminée. Shape final: {X_train_scaled.shape}")
-
-    return (
-        X_train_scaled,
-        X_test_scaled,
-        y_train,
-        y_test,
-        scaler,
-        X_train.columns.tolist(),
-    )
-
-
-def train_model(X_train, y_train, model_type="random_forest", **params):
-    """
-    Entraîner un modèle de machine learning.
-    """
-    print(f"Entraînement du modèle {model_type}...")
-
-    if model_type == "random_forest":
-        model = _train_random_forest(X_train, y_train, params)
-    elif model_type == "xgboost":
-        model = _train_xgboost(X_train, y_train, params)
-    else:
-        raise ValueError("Type de modèle non supporté")
-
-    print("Entraînement terminé avec succès!")
-    return model
-
+    
+    start_time = time.time()
+    
+    try:
+        if model_type == "random_forest":
+            model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1,
+            )
+        elif model_type == "xgboost":
+            model = xgb.XGBClassifier(
+                n_estimators=100,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                n_jobs=-1,
+            )
+        else:
+            raise ValueError(f"Type de modèle non supporté: {model_type}")
+        
+        model.fit(X_train, y_train)
+        
+        duration = time.time() - start_time
+        
+        print(f"✅ Modèle {model_type} entraîné! Durée: {duration:.2f}s")
+        
+        # Log vers Elasticsearch
+        es_logger.log_model_training(model_type, duration)
+        
+        # Log des hyperparamètres dans MLflow et Elasticsearch
+        if mlflow.active_run():
+            params = model.get_params()
+            run_id = mlflow.active_run().info.run_id
+            
+            # Log vers Elasticsearch
+            es_logger.log_mlflow_params(run_id, params)
+            
+            for param_name, param_value in params.items():
+                try:
+                    mlflow.log_param(f"{model_type}_{param_name}", param_value)
+                except:
+                    pass
+        
+        return model
+        
+    except Exception as e:
+        es_logger.log_error(f"Erreur lors de l'entraînement: {str(e)}", e)
+        raise
 
 def evaluate_model(model, X_test, y_test, model_name="Model"):
     """
-    Évaluer les performances du modèle.
+    Évalue les performances du modèle
+    
+    Args:
+        model: Modèle entraîné
+        X_test: Features de test
+        y_test: Target de test
+        model_name: Nom du modèle pour l'affichage
     
     Returns:
-        dict: Métriques d'évaluation
+        dict: Dictionnaire contenant les métriques
     """
-    print(f"Évaluation du modèle {model_name}...")
+    es_logger = get_elasticsearch_logger()
     
-    # Prédictions
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
+    print(f"📊 Évaluation du {model_name}...")
+    es_logger.log_event(
+        "INFO",
+        f"Début de l'évaluation du modèle {model_name}",
+        {"stage": "evaluation_start", "model_name": model_name}
+    )
     
-    # Calcul des métriques
-    accuracy = accuracy_score(y_test, y_pred)
-    roc_auc = roc_auc_score(y_test, y_proba)
-    logloss = log_loss(y_test, model.predict_proba(X_test))
-    kappa = cohen_kappa_score(y_test, y_pred)
-    mcc = matthews_corrcoef(y_test, y_pred)
-    conf_matrix = confusion_matrix(y_test, y_pred)
-    class_report = classification_report(y_test, y_pred)
-    
-    # Métriques détaillées
-    metrics = {
-        'model_name': model_name,
-        'accuracy': accuracy,
-        'roc_auc': roc_auc,
-        'log_loss': logloss,
-        'cohen_kappa': kappa,
-        'matthews_corrcoef': mcc,
-        'confusion_matrix': conf_matrix,
-        'classification_report': class_report,
-        'y_pred': y_pred,
-        'y_proba': y_proba
-    }
-    
-    # Affichage du rapport
-    _print_evaluation_report(metrics)
-    
-    # RETOURNER LES MÉTRIQUES - C'EST IMPORTANT !
-    return {
-        'accuracy': accuracy,
-        'roc_auc': roc_auc,
-        'log_loss': logloss,
-        'cohen_kappa': kappa,
-        'matthews_corrcoef': mcc
-    }
-
-
-def save_model(model, filepath=None):
-    """
-    Sauvegarder le modèle entraîné.
-    """
-    if filepath is None:
-        filepath = CONFIG["MODEL_PATH"]
-
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    joblib.dump(model, filepath)
-    print(f"Modèle sauvegardé: {filepath}")
-
-
-def load_model(filepath=None):
-    """
-    Charger un modèle sauvegardé.
-    """
-    if filepath is None:
-        filepath = CONFIG["MODEL_PATH"]
-
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Modèle non trouvé: {filepath}")
-
-    model = joblib.load(filepath)
-    print(f"Modèle chargé: {filepath}")
-    return model
-
-
-# =============================================================================
-# FONCTIONS INTERNES
-# =============================================================================
-
-
-def _load_and_combine_data(train_path, test_path):
-    X_train = pd.read_csv(train_path)
-    X_test = pd.read_csv(test_path)
-    return X_train, X_test
-
-
-def _encode_categorical_features(X_train, X_test):
-    binary_cols = ["International plan", "Voice mail plan"]
-
-    for col in binary_cols:
-        if col in X_train.columns:
-            X_train[col] = X_train[col].map({"No": 0, "Yes": 1})
-            X_test[col] = X_test[col].map({"No": 0, "Yes": 1})
-
-    if "Churn" in X_train.columns:
-        X_train["Churn"] = X_train["Churn"].astype(int)
-    if "Churn" in X_test.columns:
-        X_test["Churn"] = X_test["Churn"].astype(int)
-
-    encoder_state = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-    encoder_area = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-
-    encoded_states_train = encoder_state.fit_transform(X_train[["State"]])
-    encoded_states_test = encoder_state.transform(X_test[["State"]])
-
-    encoded_area_train = encoder_area.fit_transform(X_train[["Area code"]])
-    encoded_area_test = encoder_area.transform(X_test[["Area code"]])
-
-    encoded_states_df_train = pd.DataFrame(
-        encoded_states_train, columns=encoder_state.get_feature_names_out(["State"])
-    )
-    encoded_states_df_test = pd.DataFrame(
-        encoded_states_test, columns=encoder_state.get_feature_names_out(["State"])
-    )
-
-    encoded_area_df_train = pd.DataFrame(
-        encoded_area_train, columns=encoder_area.get_feature_names_out(["Area code"])
-    )
-    encoded_area_df_test = pd.DataFrame(
-        encoded_area_test, columns=encoder_area.get_feature_names_out(["Area code"])
-    )
-
-    X_train = X_train.drop(["State", "Area code"], axis=1)
-    X_test = X_test.drop(["State", "Area code"], axis=1)
-
-    X_train = pd.concat(
-        [X_train, encoded_states_df_train, encoded_area_df_train], axis=1
-    )
-    X_test = pd.concat([X_test, encoded_states_df_test, encoded_area_df_test], axis=1)
-
-    return X_train, X_test, encoder_state, encoder_area
-
-
-def _handle_outliers(df):
-    numerical_cols = [
-        "Account length",
-        "Total day minutes",
-        "Total day calls",
-        "Total day charge",
-        "Total eve minutes",
-        "Total eve calls",
-        "Total eve charge",
-        "Total night minutes",
-        "Total night calls",
-        "Total night charge",
-        "Total intl minutes",
-        "Total intl calls",
-        "Total intl charge",
-    ]
-
-    from scipy.stats import zscore
-
-    z_scores = zscore(df[numerical_cols])
-    filtered_entries = (np.abs(z_scores) < CONFIG["Z_SCORE_THRESHOLD"]).all(axis=1)
-    return df[filtered_entries]
-
-
-def _create_engineered_features(df):
-    df["Total calls"] = (
-        df["Total day calls"]
-        + df["Total eve calls"]
-        + df["Total night calls"]
-        + df["Total intl calls"]
-    )
-
-    df["Total charge"] = (
-        df["Total day charge"]
-        + df["Total eve charge"]
-        + df["Total night charge"]
-        + df["Total intl charge"]
-    )
-
-    df["CScalls Rate"] = df["Customer service calls"] / (df["Account length"] + 1)
-    return df
-
-
-def _drop_correlated_features(df):
-    correlated_cols = [
-        "Total day minutes",
-        "Total eve minutes",
-        "Total night minutes",
-        "Total intl minutes",
-        "Voice mail plan",
-    ]
-
-    return df.drop(columns=[col for col in correlated_cols if col in df.columns])
-
-
-def _balance_data(X, y):
-    smote_enn = SMOTEENN(
-        sampling_strategy=CONFIG["SMOTE_SAMPLING_RATIO"],
-        random_state=CONFIG["RANDOM_STATE"],
-    )
-    X_resampled, y_resampled = smote_enn.fit_resample(X, y)
-    return X_resampled, y_resampled
-
-
-def _scale_features(X_train, X_test):
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    return X_train_scaled, X_test_scaled, scaler
-
-
-def _save_preprocessors(scaler, encoder_state, encoder_area):
-    os.makedirs("models", exist_ok=True)
-    joblib.dump(scaler, CONFIG["SCALER_PATH"])
-    joblib.dump(encoder_state, CONFIG["ENCODER_STATE_PATH"])
-    joblib.dump(encoder_area, CONFIG["ENCODER_AREA_PATH"])
-    print("Préprocesseurs sauvegardés!")
-
-
-def _train_random_forest(X_train, y_train, params):
-    default_params = {
-        "n_estimators": 100,
-        "max_depth": 10,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
-        "max_features": "sqrt",
-        "random_state": CONFIG["RANDOM_STATE"],
-        "class_weight": "balanced",
-    }
-    default_params.update(params)
-
-    model = RandomForestClassifier(**default_params)
-    model.fit(X_train, y_train)
-    return model
-
-
-def _train_xgboost(X_train, y_train, params):
     try:
-        from xgboost import XGBClassifier
-
-        default_params = {
-            "n_estimators": 100,
-            "learning_rate": 0.1,
-            "max_depth": 6,
-            "random_state": CONFIG["RANDOM_STATE"],
+        # Prédictions
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+        
+        # Calcul des métriques
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, zero_division=0)
+        recall = recall_score(y_test, y_pred, zero_division=0)
+        f1 = f1_score(y_test, y_pred, zero_division=0)
+        roc_auc = roc_auc_score(y_test, y_pred_proba)
+        
+        metrics = {
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+            "roc_auc": roc_auc,
         }
-        default_params.update(params)
+        
+        # Affichage des métriques
+        print(f"\n{'='*50}")
+        print(f"RÉSULTATS - {model_name}")
+        print(f"{'='*50}")
+        print(f"Accuracy:  {accuracy:.4f}")
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall:    {recall:.4f}")
+        print(f"F1-Score:  {f1:.4f}")
+        print(f"ROC-AUC:   {roc_auc:.4f}")
+        print(f"{'='*50}\n")
+        
+        # Matrice de confusion
+        cm = confusion_matrix(y_test, y_pred)
+        print("Matrice de confusion:")
+        print(cm)
+        print()
+        
+        # Rapport de classification
+        print("Rapport de classification:")
+        print(classification_report(y_test, y_pred, zero_division=0))
+        
+        # Log des métriques vers Elasticsearch
+        es_logger.log_model_evaluation(model_name, metrics)
+        
+        # Log des métriques dans MLflow et Elasticsearch
+        if mlflow.active_run():
+            run_id = mlflow.active_run().info.run_id
+            
+            # Log vers Elasticsearch
+            es_logger.log_mlflow_metrics(run_id, metrics)
+            
+            # Log vers MLflow
+            for metric_name, metric_value in metrics.items():
+                mlflow.log_metric(metric_name, metric_value)
+            
+            # Créer et logger la matrice de confusion
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                        xticklabels=['No Churn', 'Churn'],
+                        yticklabels=['No Churn', 'Churn'])
+            plt.title(f'Confusion Matrix - {model_name}')
+            plt.ylabel('True Label')
+            plt.xlabel('Predicted Label')
+            plt.tight_layout()
+            
+            cm_path = "confusion_matrix.png"
+            plt.savefig(cm_path)
+            mlflow.log_artifact(cm_path)
+            plt.close()
+            
+            # Courbe ROC
+            fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+            plt.figure(figsize=(8, 6))
+            plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {roc_auc:.4f})')
+            plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title(f'ROC Curve - {model_name}')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            
+            roc_path = "roc_curve.png"
+            plt.savefig(roc_path)
+            mlflow.log_artifact(roc_path)
+            plt.close()
+            
+            # Feature importance (si disponible)
+            if hasattr(model, 'feature_importances_'):
+                if hasattr(X_test, 'columns'):
+                    feature_names = X_test.columns.tolist()
+                else:
+                    feature_names = [f"Feature_{i}" for i in range(X_test.shape[1])]
+                
+                importances = model.feature_importances_
+                indices = np.argsort(importances)[::-1][:10]
+                
+                plt.figure(figsize=(10, 6))
+                plt.bar(range(len(indices)), importances[indices])
+                plt.xticks(range(len(indices)), [feature_names[i] for i in indices], rotation=45, ha='right')
+                plt.xlabel('Features')
+                plt.ylabel('Importance')
+                plt.title(f'Top 10 Feature Importances - {model_name}')
+                plt.tight_layout()
+                
+                fi_path = "feature_importance.png"
+                plt.savefig(fi_path)
+                mlflow.log_artifact(fi_path)
+                plt.close()
+        
+        es_logger.log_event(
+            "INFO",
+            f"Évaluation du modèle {model_name} terminée avec succès",
+            {"stage": "evaluation_end", "model_name": model_name}
+        )
+        
+        return metrics
+        
+    except Exception as e:
+        es_logger.log_error(f"Erreur lors de l'évaluation: {str(e)}", e)
+        raise
 
-        model = XGBClassifier(**default_params)
-        model.fit(X_train, y_train)
+def save_model(model, filepath):
+    """
+    Sauvegarde le modèle
+    
+    Args:
+        model: Modèle à sauvegarder
+        filepath: Chemin de sauvegarde
+    """
+    es_logger = get_elasticsearch_logger()
+    
+    print(f"💾 Sauvegarde du modèle: {filepath}")
+    es_logger.log_event("INFO", f"Sauvegarde du modèle: {filepath}", {"stage": "model_save"})
+    
+    try:
+        # Créer le dossier si nécessaire
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        
+        joblib.dump(model, filepath)
+        print(f"✅ Modèle sauvegardé!")
+        
+        es_logger.log_event("INFO", f"Modèle sauvegardé avec succès: {filepath}", {"stage": "model_save"})
+        
+    except Exception as e:
+        es_logger.log_error(f"Erreur lors de la sauvegarde: {str(e)}", e)
+        raise
+
+def load_model(filepath):
+    """
+    Charge un modèle sauvegardé
+    
+    Args:
+        filepath: Chemin du modèle
+    
+    Returns:
+        model: Modèle chargé
+    """
+    es_logger = get_elasticsearch_logger()
+    
+    print(f"📂 Chargement du modèle: {filepath}")
+    es_logger.log_event("INFO", f"Chargement du modèle: {filepath}", {"stage": "model_load"})
+    
+    try:
+        model = joblib.load(filepath)
+        print(f"✅ Modèle chargé!")
+        
+        es_logger.log_event("INFO", f"Modèle chargé avec succès: {filepath}", {"stage": "model_load"})
+        
         return model
-    except ImportError:
-        raise ImportError("XGBoost n'est pas installé")
-
-
-def _print_evaluation_report(metrics):
-    print(f"\n{'='*60}")
-    print(f"{metrics['model_name']} - Rapport d'Évaluation")
-    print(f"{'='*60}")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print(f"ROC AUC: {metrics['roc_auc']:.4f}")
-    print(f"Log Loss: {metrics['log_loss']:.4f}")
-    print(f"Cohen's Kappa: {metrics['cohen_kappa']:.4f}")
-    print(f"Matthews Correlation Coefficient: {metrics['matthews_corrcoef']:.4f}")
-    print(f"\nMatrice de Confusion:\n{metrics['confusion_matrix']}")
-    print(f"\nRapport de Classification:\n{metrics['classification_report']}")
-    print(f"{'='*60}\n")
+        
+    except Exception as e:
+        es_logger.log_error(f"Erreur lors du chargement: {str(e)}", e)
+        raise

@@ -1,0 +1,14 @@
+artifact_uri: file:///home/mahdi/churn-prediction-project/mlruns/611514482792122771/c5b2aca0c7604bf485fccd2123169c22/artifacts
+end_time: 1766393919806
+entry_point_name: ''
+experiment_id: '611514482792122771'
+lifecycle_stage: active
+run_id: c5b2aca0c7604bf485fccd2123169c22
+run_name: Full_Pipeline_xgboost
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1766393914335
+status: 3
+tags: []
+user_id: mahdi

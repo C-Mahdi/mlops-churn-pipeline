@@ -7,7 +7,7 @@ import argparse
 import sys
 import mlflow
 import mlflow.sklearn
-from pipeline import (
+from model_pipeline import (
     prepare_data,
     train_model,
     evaluate_model,
@@ -35,14 +35,8 @@ def main():
     args = parser.parse_args()
     
     # Configuration MLflow
-    mlflow.set_tracking_uri("http://127.0.0.1:5000")
+    mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment(args.experiment_name)
-
-    mlflow.set_tag("version", "v1.0")
-    mlflow.set_tag("developer", "Votre_Nom")
-    mlflow.set_tag("environment", "production")
-
-
     
     if not any([args.prepare, args.train, args.evaluate, args.full_pipeline]):
         parser.print_help()

@@ -1,0 +1,14 @@
+artifact_uri: file:///home/mahdi/churn-prediction-project/mlruns/611514482792122771/7ed8f630f6a94eeeb1785d91e44cb18f/artifacts
+end_time: 1766394291870
+entry_point_name: ''
+experiment_id: '611514482792122771'
+lifecycle_stage: active
+run_id: 7ed8f630f6a94eeeb1785d91e44cb18f
+run_name: Training_random_forest
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1766394288113
+status: 3
+tags: []
+user_id: mahdi
